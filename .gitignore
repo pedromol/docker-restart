@@ -1,0 +1,4 @@
+vendor
+main
+docker-compose.yml
+docker-restart
