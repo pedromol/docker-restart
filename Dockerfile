@@ -9,11 +9,11 @@ COPY go.sum /go/src/app
 RUN apk add git
 
 RUN go mod tidy
-RUN CGO_ENABLED=0 go build -ldflags '-extldflags "-static" -w -s' -tags timetzdata ./...
+RUN CGO_ENABLED=0 go build -ldflags '-extldflags "-static" -w -s' -tags timetzdata
 
 FROM scratch
 
-COPY --from=build /go/src/app/goci /main
+COPY --from=build /go/src/app/docker-restart /main
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 EXPOSE 2223
