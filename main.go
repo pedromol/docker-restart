@@ -31,6 +31,7 @@ const (
 	FILTER       = "json?filters="
 	COMMAND      = "/restart?t="
 	CONTENT_TYPE = "application/json"
+	TIME_FORMAT  = "2006.01.02 15:04:05"
 )
 
 type config struct {
@@ -58,6 +59,7 @@ type Client struct {
 	httpw http.Client
 	cfg   *config
 	ctr   syncfloat64.Counter
+	ctx   context.Context
 }
 
 func getEnvDuration(name string, defaultVal int) time.Duration {
@@ -112,6 +114,7 @@ func NewClient() *Client {
 		httpw: http.Client{
 			Timeout: c.RequestTimeout,
 		},
+		ctx: context.TODO(),
 	}
 }
 
@@ -123,51 +126,53 @@ func main() {
 		containers, err := client.getContainers()
 		if err != nil {
 			fmt.Printf("Failed to list containers. %s\n", err)
-			continue
-		}
+		} else {
+			for _, c := range containers {
+				t := time.Now().Format(TIME_FORMAT)
+				id := c.Id[0:12]
 
-		for _, c := range containers {
-			t := time.Now().Format("2006.01.02 15:04:05")
-			id := c.Id[0:12]
-
-			if len(c.Names) == 0 || c.Names[0] == NULL {
-				fmt.Printf("%s Container name of (%s) is null, which implies container does not exist - don't restart.\n", t, id)
-				continue
-			}
-
-			if c.State == RESTARTING {
-				fmt.Printf("%s Container %s (%s) found to be restarting - don't restart.\n", t, c.Names[0], id)
-				continue
-			}
-
-			fmt.Printf("%s Container %s (%s) found to be unhealthy - Restarting container now.\n", t, c.Names[0], id)
-
-			if err := client.restartContainer(c.Id, c.Labels["autoheal.stop.timeout"]); err != nil {
-				client.addMetric(c.Names[0], "Failed to restart the container")
-				if err := client.notify("%s Container %s (%s) found to be unhealthy. Failed to restart the container.\n", t, c.Names[0], id); err != nil {
-					fmt.Printf("Failed to call webhook. %s\n", err)
+				if len(c.Names) == 0 || c.Names[0] == NULL {
+					fmt.Printf("%s Container name of (%s) is null, which implies container does not exist - don't restart.\n", t, id)
+					continue
 				}
-			} else {
-				client.addMetric(c.Names[0], "Successfully restarted the container")
-				if err := client.notify("%s Container %s (%s) found to be unhealthy. Successfully restarted the container.\n", t, c.Names[0], id); err != nil {
-					fmt.Printf("Failed to call webhook. %s\n", err)
+
+				if c.State == RESTARTING {
+					fmt.Printf("%s Container %s (%s) found to be restarting - don't restart.\n", t, c.Names[0], id)
+					continue
 				}
+
+				fmt.Printf("%s Container %s (%s) found to be unhealthy - Restarting container now.\n", t, c.Names[0], id)
+				client.restart(c, id, t)
 			}
 		}
 		client.delay()
 	}
 }
 
+func (c *Client) restart(container Container, id string, t string) {
+	if err := c.restartContainer(container.Id, container.Labels["autoheal.stop.timeout"]); err != nil {
+		c.addMetric(container.Names[0], "Failed to restart the container")
+		if err := c.notify("%s Container %s (%s) found to be unhealthy. Failed to restart the container.\n", t, container.Names[0], id); err != nil {
+			fmt.Printf("Failed to call webhook. %s\n", err)
+		}
+	} else {
+		c.addMetric(container.Names[0], "Successfully restarted the container")
+		if err := c.notify("%s Container %s (%s) found to be unhealthy. Successfully restarted the container.\n", t, container.Names[0], id); err != nil {
+			fmt.Printf("Failed to call webhook. %s\n", err)
+		}
+	}
+}
+
 func (c *Client) addMetric(key string, value string) {
 	if c.cfg.MetricsEnabled == "true" {
-		c.ctr.Add(context.TODO(), 1, []attribute.KeyValue{
+		c.ctr.Add(c.ctx, 1, []attribute.KeyValue{
 			attribute.Key(key).String(value),
 		}...)
 	}
 }
 
 func (c *Client) serveMetrics() {
-	fmt.Printf("Serving metrics at :" + c.cfg.MetricsPort + "/metrics")
+	fmt.Printf("%s Serving metrics at : %s /metrics\n", time.Now().Format(TIME_FORMAT), c.cfg.MetricsPort)
 	http.Handle("/metrics", promhttp.Handler())
 	err := http.ListenAndServe(":"+c.cfg.MetricsPort, nil)
 	if err != nil {
@@ -189,6 +194,7 @@ func (c *Client) init() {
 			log.Fatal(err)
 		}
 		c.ctr = ctr
+		c.ctr.Add(c.ctx, 0, []attribute.KeyValue{}...)
 
 		go c.serveMetrics()
 	}
